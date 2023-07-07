@@ -14,6 +14,7 @@ from .unwrap import UnwrapCallback
 from .upsample import upsample_nearest
 
 __all__ = [
+    "coarse_unwrap",
     "multiscale_unwrap",
 ]
 
@@ -199,7 +200,7 @@ def upsample_unwrapped_phase(
     return wrapped_phase_hires + 2.0 * np.pi * diff_cycles_hires
 
 
-def coarse_unwrap(
+def _coarse_unwrap(
     igram: da.Array,
     coherence: da.Array,
     nlooks: float,
@@ -520,7 +521,7 @@ def _multiscale_unwrap(
 
     # Get a coarse estimate of the unwrapped phase using a low-resolution copy of the
     # interferogram.
-    coarse_unw_phase, coarse_conncomp = coarse_unwrap(
+    coarse_unw_phase, coarse_conncomp = _coarse_unwrap(
         igram=igram,
         coherence=coherence,
         nlooks=nlooks,
@@ -708,6 +709,103 @@ def multiscale_unwrap(
 
     # Unwrap.
     da_unw, da_conncomp = _multiscale_unwrap(
+        igram=da_igram,
+        coherence=da_coherence,
+        nlooks=nlooks,
+        unwrap=unwrap,
+        downsample_factor=downsample_factor,
+        do_lowpass_filter=do_lowpass_filter,
+        shape_factor=shape_factor,
+        overhang=overhang,
+        ripple=ripple,
+        attenuation=attenuation,
+    )
+
+    # Store results.
+    da.store([da_unw, da_conncomp], [unw, conncomp], lock=util.get_lock())
+
+
+def coarse_unwrap(
+    unw: DatasetWriter,
+    conncomp: DatasetWriter,
+    igram: DatasetReader,
+    coherence: DatasetReader,
+    nlooks: float,
+    unwrap: UnwrapCallback,
+    downsample_factor: Tuple[int, int],
+    *,
+    do_lowpass_filter: bool = True,
+    shape_factor: float = 1.5,
+    overhang: float = 0.5,
+    ripple: float = 0.01,
+    attenuation: float = 40.0,
+) -> None:
+    """
+    Estimate coarse unwrapped phase by unwrapping a downsampled interferogram.
+
+    The input interferogram and coherence are multilooked down to lower resolution and
+    then used to form a coarse unwrapped phase estimate, which is then upsampled back to
+    the original sample spacing.
+
+    A low-pass filter may be applied prior to multilooking the interferogram in order to
+    reduce aliasing effects.
+
+    Parameters
+    ----------
+    unw : DatasetWriter
+        The output unwrapped phase, in radians. An array with the same shape as the
+        input interferogram.
+    conncomp : DatasetWriter
+        The output array of connected component labels, with the same shape as the
+        unwrapped phase.
+    igram : DatasetReader
+        The input interferogram. A two-dimensional complex-valued array.
+    coherence : DatasetReader
+        The sample coherence coefficient, with the same shape as the input
+        interferogram.
+    nlooks : float
+        The effective number of looks used to form the input interferogram and
+        coherence.
+    unwrap : UnwrapCallback
+        A callback function used to unwrap the interferogram at low resolution.
+    downsample_factor : tuple of int
+        The number of looks to take along each axis in order to form the low-resolution
+        interferogram.
+    do_lowpass_filter : bool, optional
+        If True, apply a low-pass pre-filter prior to multilooking in order to reduce
+        aliasing effects. (default: True)
+    shape_factor : float, optional
+        The shape factor of the filter (the ratio of the width of the combined
+        pass-band and transition band to the pass-band width). Must be greater than or
+        equal to 1. A larger shape factor results in a more gradual filter roll-off.
+        Ignored if `do_lowpass_filter` is False. (default: 1.5)
+    overhang : float, optional
+        The fraction of the low-pass filter transition bandwidth that extends beyond the
+        Nyquist frequency of the resulting multilooked data. For example, if
+        `overhang=0`, the transition band will be entirely within the Nyquist bandwidth.
+        If `overhang=0.5`, the transition band will centered on the Nyquist frequency.
+        The value must be within the interval [0, 1]. Ignored if `do_lowpass_filter` is
+        False. (default: 0.5)
+    ripple : float, optional
+        The maximum allowed ripple amplitude below unity gain in the pass-band, in
+        decibels. Ignored if `do_lowpass_filter` is False. (default: 0.01)
+    attenuation : float, optional
+        The stop-band attenuation (the difference in amplitude between the ideal gain in
+        the pass-band and the highest gain in the stop-band), in decibels. Ignored if
+        `do_lowpass_filter` is False. (default: 40)
+    """
+    if unw.shape != igram.shape:
+        raise ValueError("shape mismatch: igram and unw must have the same shape")
+    if conncomp.shape != unw.shape:
+        raise ValueError("shape mismatch: unw and conncomp must have the same shape")
+
+    # Convert inputs to dask arrays. Interferogram and coherence must have the same
+    # chunksize.
+    da_igram = da.from_array(igram, asarray=True)
+    da_coherence = da.from_array(coherence, asarray=True)
+
+    # Unwrap.
+    da_unw, da_conncomp = _coarse_unwrap(
         igram=da_igram,
         coherence=da_coherence,
         nlooks=nlooks,

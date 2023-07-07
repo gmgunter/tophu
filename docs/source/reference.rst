@@ -12,6 +12,7 @@ API Reference
     SnaphuUnwrap
     PhassUnwrap
     ICUUnwrap
+    coarse_unwrap
     multiscale_unwrap
 
 **Tile Management**
